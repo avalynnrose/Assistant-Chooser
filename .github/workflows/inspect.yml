@@ -1,0 +1,29 @@
+name: Inspect ChatGPT manifest
+on: [push]
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download ChatGPT
+        run: |
+          set -x
+          curl -sSL -A "Mozilla/5.0" -o chatgpt.xapk "https://d.apkpure.com/b/XAPK/com.openai.chatgpt?version=latest" || true
+          file chatgpt.xapk; ls -la
+          mkdir x && (cd x && unzip -o -q ../chatgpt.xapk || true); ls -la x
+          APK=$(ls x/com.openai.chatgpt.apk x/base.apk 2>/dev/null | head -1)
+          [ -z "$APK" ] && APK=chatgpt.xapk
+          echo "APK=$APK" >> $GITHUB_ENV
+      - name: Dump
+        run: |
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          $BT/aapt2 dump badging "$APK" | head -5 > out.txt
+          $BT/aapt2 dump xmltree --file AndroidManifest.xml "$APK" > manifest.txt
+          for f in $($BT/aapt2 dump resources "$APK" | grep -oE 'res/xml/[^ ]*shortcut[^ ]*\.xml' | sort -u); do echo "== $f"; $BT/aapt2 dump xmltree --file "$f" "$APK"; done > shortcuts.txt 2>&1 || true
+          unzip -l "$APK" | grep -i shortcut >> shortcuts.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-manifest
+          path: |
+            out.txt
+            manifest.txt
+            shortcuts.txt

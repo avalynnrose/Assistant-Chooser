@@ -138,13 +138,13 @@ class EntryPointDumpActivity : Activity() {
     private fun describeAttrs(p: XmlResourceParser, ctx: Context? = null): String {
         val sb = StringBuilder()
         for (i in 0 until p.attributeCount) {
-            val name = p.getAttributeName(i).ifEmpty {
+            val name = (p.getAttributeName(i) ?: "").ifEmpty {
                 runCatching { resources.getResourceEntryName(p.getAttributeNameResource(i)) }
                     .getOrDefault("attr${p.getAttributeNameResource(i)}")
             }
             if (name in setOf("icon", "theme", "roundIcon", "screenOrientation", "configChanges",
                     "windowSoftInputMode", "launchMode", "taskAffinity")) continue
-            var value = p.getAttributeValue(i)
+            var value = p.getAttributeValue(i) ?: ""
             if (ctx != null && value.startsWith("@")) {
                 val id = p.getAttributeResourceValue(i, 0)
                 runCatching { ctx.resources.getString(id) }.getOrNull()?.let { value = "\"$it\"" }

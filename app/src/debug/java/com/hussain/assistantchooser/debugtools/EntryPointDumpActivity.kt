@@ -18,6 +18,8 @@ import org.xmlpull.v1.XmlPullParser
 
 private const val TARGET_PKG = "com.openai.chatgpt"
 private const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
+private val SKIP_ATTRS = setOf("icon", "theme", "roundIcon", "screenOrientation", "configChanges",
+    "windowSoftInputMode", "launchMode", "taskAffinity", "label", "resizeableActivity")
 
 /**
  * Debug-only screen that reads ChatGPT's compiled AndroidManifest.xml and launcher-shortcut XML
@@ -80,35 +82,34 @@ class EntryPointDumpActivity : Activity() {
         val shortcutRes = mutableListOf<Int>()
 
         out.appendLine("=== Manifest (activities with intent filters, or exported) ===")
-        val parser = pkgContext.assets.openXmlResourceParser("AndroidManifest.xml")
-        val block = StringBuilder()
-        var inActivity = false
-        var keep = false
-        var depth = 0
-        while (true) {
-            val ev = parser.next()
-            if (ev == XmlPullParser.END_DOCUMENT) break
-            if (ev == XmlPullParser.START_TAG) {
-                val tag = parser.name
-                if (tag == "activity" || tag == "activity-alias") {
-                    inActivity = true; block.clear(); depth = parser.depth
-                    keep = attr(parser, "exported") == "true"
-                }
-                if (inActivity) {
-                    if (tag == "intent-filter") keep = true
-                    if (tag == "meta-data" && attr(parser, "name") == "android.app.shortcuts") {
-                        resAttr(parser, "resource")?.let { shortcutRes += it }
-                    }
-                    block.append("  ".repeat(parser.depth - depth)).append('<').append(tag)
-                    block.append(describeAttrs(parser)).appendLine(">")
-                }
-            } else if (ev == XmlPullParser.END_TAG && inActivity && parser.depth == depth &&
-                (parser.name == "activity" || parser.name == "activity-alias")) {
-                inActivity = false
-                if (keep) out.append(block).appendLine()
-            }
+        val manifestBytes = java.util.zip.ZipFile(info.applicationInfo!!.sourceDir).use { zip ->
+            zip.getInputStream(zip.getEntry("AndroidManifest.xml")).readBytes()
         }
-        parser.close()
+        val nodes = BinaryXml.parse(manifestBytes)
+        out.appendLine("(${nodes.size} manifest elements)")
+        var i = 0
+        while (i < nodes.size) {
+            val n = nodes[i]
+            if (n.name == "activity" || n.name == "activity-alias") {
+                val block = mutableListOf(n)
+                var j = i + 1
+                while (j < nodes.size && nodes[j].depth > n.depth) { block += nodes[j]; j++ }
+                val exported = n.attrs.any { it.first == "exported" && it.second == "true" }
+                if (exported || block.any { it.name == "intent-filter" }) {
+                    for (b in block) {
+                        out.append("  ".repeat(b.depth - n.depth)).append('<').append(b.name)
+                        for ((k, v) in b.attrs) if (k !in SKIP_ATTRS) out.append(' ').append(k).append('=').append(v)
+                        out.appendLine(">")
+                    }
+                    out.appendLine()
+                }
+                for (b in block) if (b.name == "meta-data" &&
+                    b.attrs.any { it.first == "name" && it.second == "android.app.shortcuts" }) {
+                    b.refs["resource"]?.let { shortcutRes += it }
+                }
+                i = j
+            } else i++
+        }
 
         out.appendLine("=== Launcher shortcuts ===")
         if (shortcutRes.isEmpty()) out.appendLine("(none declared)")
@@ -128,12 +129,6 @@ class EntryPointDumpActivity : Activity() {
         return out.toString()
     }
 
-    private fun attr(p: XmlResourceParser, name: String): String? =
-        p.getAttributeValue(ANDROID_NS, name)
-
-    private fun resAttr(p: XmlResourceParser, name: String): Int? =
-        p.getAttributeResourceValue(ANDROID_NS, name, 0).takeIf { it != 0 }
-
     /** Prints attributes, resolving string references (e.g. shortcut labels) where possible. */
     private fun describeAttrs(p: XmlResourceParser, ctx: Context? = null): String {
         val sb = StringBuilder()
@@ -142,8 +137,7 @@ class EntryPointDumpActivity : Activity() {
                 runCatching { resources.getResourceEntryName(p.getAttributeNameResource(i)) }
                     .getOrDefault("attr${p.getAttributeNameResource(i)}")
             }
-            if (name in setOf("icon", "theme", "roundIcon", "screenOrientation", "configChanges",
-                    "windowSoftInputMode", "launchMode", "taskAffinity")) continue
+            if (name in SKIP_ATTRS) continue
             var value = p.getAttributeValue(i) ?: ""
             if (ctx != null && value.startsWith("@")) {
                 val id = p.getAttributeResourceValue(i, 0)
